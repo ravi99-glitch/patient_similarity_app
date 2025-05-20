@@ -4,6 +4,5 @@ pandas
 PyPDF2
 sentence-transformers
 transformers
-medcat
 gdown
-zipfile
+git+https://github.com/CogStack/MedCAT.git
