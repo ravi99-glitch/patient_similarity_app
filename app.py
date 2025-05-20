@@ -11,6 +11,7 @@ from transformers import AutoTokenizer, AutoModel, pipeline
 from medcat.cat import CAT
 
 
+# --- DOWNLOAD & ENTPACKEN nur einmal ---
 def download_file_if_missing(file_id, output_path):
     if not os.path.exists(output_path):
         url = f"https://drive.google.com/uc?id={file_id}"
@@ -29,33 +30,64 @@ def download_required_files():
         "mc_modelpack_snomed.zip"
     )
     download_file_if_missing(
-        "1Yd6nu3RBio0KMKENUGgAWO_BhKU1sgUI",  
+        "1Yd6nu3RBio0KMKENUGgAWO_BhKU1sgUI",
         "concepts.csv"
     )
-    # Falls Modelpack als ZIP runtergeladen wird, entpacken:
+    # Entpacken, falls noch nicht entpackt
     modelpack_folder = "mc_modelpack_snomed"
     if not os.path.exists(modelpack_folder) and os.path.exists("mc_modelpack_snomed.zip"):
         with zipfile.ZipFile("mc_modelpack_snomed.zip", 'r') as zip_ref:
             zip_ref.extractall(modelpack_folder)
         st.info("MedCAT Modelpack entpackt.")
 
+# --- CACHING der Modelle/Daten ---
+@st.cache_resource(show_spinner=False)
+def load_bert_model():
+    return AutoModel.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
+
+@st.cache_resource(show_spinner=False)
+def load_bert_tokenizer():
+    return AutoTokenizer.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
+
+@st.cache_resource(show_spinner=False)
+def load_summarizer():
+    device = 0 if torch.cuda.is_available() else -1
+    return pipeline("summarization", model="facebook/bart-large-cnn", device=device)
+
+@st.cache_resource(show_spinner=False)
+def load_medcat():
+    return CAT.load_model_pack("mc_modelpack_snomed")
+
+@st.cache_data(show_spinner=False)
+def load_embeddings():
+    device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
+    return torch.load("all_diagnoses_embeddings_prettyname_status_type_contextsim.pt", map_location=device)
+
+@st.cache_data(show_spinner=False)
+def load_diagnoses_csv():
+    return pd.read_csv("concepts.csv")
+
+
+# --- APP START ---
 download_required_files()
 
 st.markdown("""
 # 🩺 Patient Similarity Analysis  
-*Vergleiche medizinische Patientenakten mit klinischen Embeddings*
-
-<small>Vergleiche basieren auf klinischen Embeddings aus Diagnosedaten der MIMIC-III-Datenbank<sup>1</sup>.</small>  
+*Compare medical patient records using clinical embeddings*  
 ---
-""", unsafe_allow_html=True)
+""")
+
+model = load_bert_model()
+model.eval()
+
+tokenizer = load_bert_tokenizer()
+summarizer = load_summarizer()
+cat = load_medcat()
+X_all_diagnoses = load_embeddings()
+df_diagnoses = load_diagnoses_csv()
 
 # --- LADE MODELLE UND DATEN ---
-X_all_diagnoses = torch.load(
-    "all_diagnoses_embeddings_prettyname_status_type_contextsim.pt",
-    map_location=torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
-)
 
-df_diagnoses = pd.read_csv("concepts.csv")
 lookup_diagnoses = pd.Series(
     df_diagnoses["prettyname_status_type_contextsim"].values,
     index=df_diagnoses["SUBJECT_ID"]
@@ -68,16 +100,6 @@ def extract_pretty_names(text):
         part.strip().split(" status_")[0].split("(")[0].strip()
         for part in text.split(";") if "status_" in part
     ])))
-
-model_name = "emilyalsentzer/Bio_ClinicalBERT"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModel.from_pretrained(model_name)
-model.eval()
-
-cat = CAT.load_model_pack("mc_modelpack_snomed")
-
-summarizer = pipeline("summarization", model="facebook/bart-large-cnn",
-                      device=0 if torch.cuda.is_available() else -1)
 
 # --- FUNKTIONEN ---
 def annotate_with_medcat(text):
